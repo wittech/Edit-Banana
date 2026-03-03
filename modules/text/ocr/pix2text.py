@@ -3,7 +3,7 @@ Pix2Text OCR 模块
 
 功能：
     使用 Pix2Text 识别图像中的数学公式。
-    作为 Azure OCR 的补充，专门处理 LaTeX 公式识别。
+    作为 layout OCR 的补充，专门处理 LaTeX 公式识别。
 
 安装：
     pip install pix2text
@@ -18,8 +18,7 @@ Pix2Text OCR 模块
     - is_latex: 是否为公式
 
 使用场景：
-    当 Azure OCR 无法识别数学公式时，使用 Pix2Text 补充识别。
-    在 main.py 中使用 --pix2text 参数启用。
+    当主 OCR 无法识别数学公式时，使用 Pix2Text 补充识别。
 """
 
 import math

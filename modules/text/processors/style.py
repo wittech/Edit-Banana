@@ -2,20 +2,12 @@
 样式处理器模块
 
 功能：
-    1. 从 Azure OCR 提取加粗、斜体、颜色等样式
+    1. 从 OCR 结果提取加粗、斜体、颜色等样式
     2. 空间聚类统一样式（解决同一行样式不一致问题）
 
-负责人：[填写负责人姓名]
-
 接口说明：
-    输入：text_blocks 列表，每个块包含 spans 信息
+    输入：text_blocks 列表，每个块包含 spans 信息；ocr_styles 为 OCR 返回的全局样式（若有）
     输出：text_blocks 列表，每个块填充 font_weight, font_style, font_color 字段
-
-使用示例：
-    from processors.style import StyleProcessor
-    
-    processor = StyleProcessor()
-    blocks = processor.process(text_blocks, azure_styles)
 """
 
 import copy
@@ -39,24 +31,20 @@ class StyleProcessor:
     def process(
         self,
         text_blocks: List[Dict[str, Any]],
-        azure_styles: List[Dict] = None,
-        unify: bool = True
+        ocr_styles: List[Dict] = None,
+        unify: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         处理样式（主入口）
-        
+
         Args:
             text_blocks: 文字块列表
-            azure_styles: Azure 返回的全局 styles 列表
+            ocr_styles: OCR 返回的全局 styles 列表（若有）
             unify: 是否执行聚类统一
-            
-        Returns:
-            处理后的文字块列表
         """
-        azure_styles = azure_styles or []
-        
-        # 步骤 1: 提取样式
-        result = self.extract_styles(text_blocks, azure_styles)
+        ocr_styles = ocr_styles or []
+
+        result = self.extract_styles(text_blocks, ocr_styles)
         
         # 步骤 2: 聚类统一
         if unify and len(result) > 1:
@@ -67,22 +55,18 @@ class StyleProcessor:
     def extract_styles(
         self,
         text_blocks: List[Dict[str, Any]],
-        azure_styles: List[Dict]
+        ocr_styles: List[Dict],
     ) -> List[Dict[str, Any]]:
         """
-        从文字块和 Azure styles 中提取样式
-        
-        优先级：
-        1. 文字块自身属性
-        2. Azure styles 的 spans 匹配
+        从文字块和 OCR styles 中提取样式。
+        优先级：1. 文字块自身属性 2. OCR styles 的 spans 匹配
         """
         result = []
         
         for block in text_blocks:
             block = copy.copy(block)
-            
-            # 提取样式
-            styles = self._extract_block_styles(block, azure_styles)
+
+            styles = self._extract_block_styles(block, ocr_styles)
             
             # 应用样式
             block["font_weight"] = "bold" if styles["is_bold"] else "normal"
@@ -100,21 +84,18 @@ class StyleProcessor:
         return result
     
     def _extract_block_styles(
-        self, 
-        block: Dict[str, Any], 
-        azure_styles: List[Dict]
+        self,
+        block: Dict[str, Any],
+        ocr_styles: List[Dict],
     ) -> Dict[str, Any]:
-        """
-        提取单个文字块的样式
-        """
+        """提取单个文字块的样式"""
         styles = {
             "is_bold": False,
             "is_italic": False,
             "color": None,
-            "background_color": None
+            "background_color": None,
         }
-        
-        # 优先使用 block 自身属性
+
         if block.get("font_weight") == "bold" or block.get("is_bold"):
             styles["is_bold"] = True
         if block.get("font_style") == "italic" or block.get("is_italic"):
@@ -123,21 +104,19 @@ class StyleProcessor:
             styles["color"] = block["font_color"]
         if block.get("background_color"):
             styles["background_color"] = block["background_color"]
-        
-        # 如果已有足够信息，直接返回
+
         has_info = styles["is_bold"] or styles["is_italic"] or styles["color"]
-        if has_info or not azure_styles:
+        if has_info or not ocr_styles:
             return styles
-        
-        # 从 azure_styles 匹配
+
         block_spans = block.get("spans", [])
         if not block_spans:
             return styles
-        
+
         block_offset = block_spans[0].get("offset", 0) if isinstance(block_spans[0], dict) else 0
         block_length = block_spans[0].get("length", 0) if isinstance(block_spans[0], dict) else 0
-        
-        for style in azure_styles:
+
+        for style in ocr_styles:
             style_spans = style.get("spans", [])
             
             for span in style_spans:

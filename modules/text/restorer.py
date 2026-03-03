@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional
 from PIL import Image
 
 # OCR 模块（相对导入）
-from .ocr.azure import AzureOCR
+from .ocr.local_ocr import LocalOCR
 from .coord_processor import CoordProcessor
 from .xml_generator import MxGraphXMLGenerator
 
@@ -29,55 +29,41 @@ from .processors.style import StyleProcessor
 from .processors.formula import FormulaProcessor
 
 
-# 默认配置
-DEFAULT_AZURE_ENDPOINT = "http://localhost:5000"
-
-
 class TextRestorer:
     """
-    文字还原器
-    
-    协调 OCR、各处理器和输出模块，完成文字还原。
+    文字还原器：协调 OCR、各处理器和输出模块，完成文字还原。
+    默认使用本地 Tesseract OCR + 可选 Pix2Text 公式识别。
     """
-    
-    def __init__(self, endpoint: str = None, formula_engine: str = 'pix2text'):
+
+    def __init__(self, formula_engine: str = "pix2text"):
         """
-        初始化文字还原器
-        
         Args:
-            endpoint: Azure 容器地址（默认使用 localhost:5000）
             formula_engine: 公式识别引擎 ('pix2text', 'none')
-                - 'pix2text': 使用 Pix2Text（默认）
-                - 'none': 不使用公式识别
         """
-        self.endpoint = endpoint or DEFAULT_AZURE_ENDPOINT
         self.formula_engine = formula_engine
-        
-        # OCR 客户端（延迟初始化）
-        self._azure_ocr = None
+
+        self._layout_ocr = None
         self._pix2text_ocr = None
-        
-        # 处理器
+
         self.font_size_processor = FontSizeProcessor()
         self.font_family_processor = FontFamilyProcessor()
         self.style_processor = StyleProcessor()
         self.formula_processor = FormulaProcessor()
-        
-        # 耗时统计
+
         self.timing = {
-            "azure_ocr": 0.0,
+            "text_ocr": 0.0,
             "pix2text_ocr": 0.0,
             "processing": 0.0,
-            "total": 0.0
+            "total": 0.0,
         }
-    
+
     @property
-    def azure_ocr(self) -> AzureOCR:
-        """延迟初始化 Azure OCR"""
-        if self._azure_ocr is None:
-            self._azure_ocr = AzureOCR(endpoint=self.endpoint)
-        return self._azure_ocr
-    
+    def layout_ocr(self) -> LocalOCR:
+        """延迟初始化本地 OCR"""
+        if self._layout_ocr is None:
+            self._layout_ocr = LocalOCR()
+        return self._layout_ocr
+
     @property
     def pix2text_ocr(self):
         """延迟初始化 Pix2Text OCR"""
@@ -151,17 +137,17 @@ class TextRestorer:
             image_width, image_height = img.size
         
         # Step 1: OCR 识别
-        azure_result, formula_result = self._run_ocr(str(image_path))
-        
-        # Step 2: 公式处理（合并 Azure 和 Pix2Text）
+        ocr_result, formula_result = self._run_ocr(str(image_path))
+
+        # Step 2: 公式处理（合并 layout OCR 与 Pix2Text）
         processing_start = time.time()
-        
+
         if formula_result:
             print("\n🔗 公式处理...")
-            merged_blocks = self.formula_processor.merge_ocr_results(azure_result, formula_result)
+            merged_blocks = self.formula_processor.merge_ocr_results(ocr_result, formula_result)
             text_blocks = self.formula_processor.to_dict_list(merged_blocks)
         else:
-            text_blocks = self._azure_to_dict_list(azure_result)
+            text_blocks = self._ocr_result_to_dict_list(ocr_result)
         
         print(f"   {len(text_blocks)} 个文字块")
         
@@ -186,13 +172,13 @@ class TextRestorer:
         
         # Step 5: 字体处理
         print("\n🎨 字体处理...")
-        global_font = self._detect_global_font(azure_result)
+        global_font = self._detect_global_font(ocr_result)
         text_blocks = self.font_family_processor.process(text_blocks, global_font=global_font)
-        
+
         # Step 6: 样式处理（加粗/颜色）
         print("\n🎨 样式处理...")
-        azure_styles = getattr(azure_result, "styles", [])
-        text_blocks = self.style_processor.process(text_blocks, azure_styles=azure_styles)
+        ocr_styles = getattr(ocr_result, "styles", [])
+        text_blocks = self.style_processor.process(text_blocks, ocr_styles=ocr_styles)
         
         self.timing["processing"] = time.time() - processing_start
         self.timing["total"] = time.time() - total_start
@@ -286,29 +272,25 @@ class TextRestorer:
         return str(output_path)
     
     def _run_ocr(self, image_path: str):
-        """运行 OCR 识别（Azure + Pix2Text）"""
-        # Azure OCR - 文字识别
-        print("\n📖 Azure OCR...")
-        azure_start = time.time()
-        azure_result = self.azure_ocr.analyze_image(image_path)
-        self.timing["azure_ocr"] = time.time() - azure_start
-        print(f"   {len(azure_result.text_blocks)} 个文字块 ({self.timing['azure_ocr']:.2f}s)")
-        
-        # 公式识别
+        """运行 OCR（本地 Tesseract + 可选 Pix2Text 公式优化）"""
+        print("\n📖 Text OCR (Tesseract)...")
+        text_start = time.time()
+        ocr_result = self.layout_ocr.analyze_image(image_path)
+        self.timing["text_ocr"] = time.time() - text_start
+        print(f"   {len(ocr_result.text_blocks)} 个文字块 ({self.timing['text_ocr']:.2f}s)")
+
         formula_result = None
-        
-        if self.formula_engine == 'pix2text':
-            # 切换为 Refinement 模式：基于 Azure 结果进行局部重识别
-            print("\n🔬公式优化 (Refinement Mode)...")
+
+        if self.formula_engine == "pix2text":
+            print("\n🔬 公式优化 (Refinement Mode)...")
             refine_start = time.time()
             fixed_count = 0
-            
-            # 1. 预处理：识别候选组（尝试合并临近的短块以解决公式断裂问题）
+
             processed_indices = set()
             new_blocks_map = {}
             indices_to_remove = set()
-            
-            blocks = azure_result.text_blocks
+
+            blocks = ocr_result.text_blocks
             i = 0
             while i < len(blocks):
                 if i in processed_indices:
@@ -379,7 +361,6 @@ class TextRestorer:
                 
                 i += 1
             
-            # 处理合并后的块列表更新
             if indices_to_remove:
                 final_blocks = []
                 for idx, block in enumerate(blocks):
@@ -388,17 +369,17 @@ class TextRestorer:
                         fixed_count += 1
                     elif idx not in indices_to_remove:
                         final_blocks.append(block)
-                azure_result.text_blocks = final_blocks
+                ocr_result.text_blocks = final_blocks
 
             self.timing["pix2text_ocr"] = time.time() - refine_start
             print(f"   优化了 {fixed_count} 个公式块 ({self.timing['pix2text_ocr']:.2f}s)")
-            
+
             formula_result = None
-            
+
         else:
             print("\n⏭️  跳过公式识别")
-        
-        return azure_result, formula_result
+
+        return ocr_result, formula_result
 
     def _should_refine_block(self, text: str) -> bool:
         """判断是否需要尝试 Refine"""
@@ -472,31 +453,31 @@ class TextRestorer:
         min_x, min_y, max_x, max_y = min(xs), min(ys), max(xs), max(ys)
         return [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)]
     
-    def _azure_to_dict_list(self, azure_result) -> List[Dict[str, Any]]:
-        """将 Azure 结果转换为字典列表"""
+    def _ocr_result_to_dict_list(self, ocr_result) -> List[Dict[str, Any]]:
+        """将 OCR 结果转换为字典列表"""
         return [
             {
                 "text": block.text,
                 "polygon": block.polygon,
-                "confidence": getattr(block, 'confidence', 1.0),
+                "confidence": getattr(block, "confidence", 1.0),
                 "font_size_px": block.font_size_px,
-                "is_latex": getattr(block, 'is_latex', False),
-                "font_family": getattr(block, 'font_family', getattr(block, 'font_name', None)),
-                "font_weight": getattr(block, 'font_weight', None),
-                "font_style": getattr(block, 'font_style', None),
-                "font_color": getattr(block, 'font_color', None),
-                "is_bold": getattr(block, 'is_bold', False),
-                "is_italic": getattr(block, 'is_italic', False),
-                "spans": getattr(block, 'spans', [])
+                "is_latex": getattr(block, "is_latex", False),
+                "font_family": getattr(block, "font_family", getattr(block, "font_name", None)),
+                "font_weight": getattr(block, "font_weight", None),
+                "font_style": getattr(block, "font_style", None),
+                "font_color": getattr(block, "font_color", None),
+                "is_bold": getattr(block, "is_bold", False),
+                "is_italic": getattr(block, "is_italic", False),
+                "spans": getattr(block, "spans", []),
             }
-            for block in azure_result.text_blocks
+            for block in ocr_result.text_blocks
         ]
-    
-    def _detect_global_font(self, azure_result) -> str:
+
+    def _detect_global_font(self, ocr_result) -> str:
         """检测全局主字体"""
-        if not azure_result.text_blocks:
+        if not ocr_result.text_blocks:
             return "Arial"
-        
+
         def get_area(block):
             polygon = block.polygon
             if not polygon or len(polygon) < 4:
@@ -504,9 +485,9 @@ class TextRestorer:
             xs = [p[0] for p in polygon]
             ys = [p[1] for p in polygon]
             return (max(xs) - min(xs)) * (max(ys) - min(ys))
-        
-        best_block = max(azure_result.text_blocks, key=get_area)
-        font = getattr(best_block, 'font_name', None)
+
+        best_block = max(ocr_result.text_blocks, key=get_area)
+        font = getattr(best_block, "font_name", None)
         
         if font:
             print(f"   ✨ 识别到主字体: {font}")
@@ -532,7 +513,7 @@ class TextRestorer:
             "generated_at": datetime.now().isoformat(),
             "input": {"path": image_path, "width": image_width, "height": image_height},
             "output": {"drawio_path": output_path},
-            "mode": f"azure+{self.formula_engine}",
+            "mode": f"local+{self.formula_engine}",
             "timing": self.timing,
             "statistics": {
                 "total_cells": len(text_blocks),
@@ -575,7 +556,7 @@ class TextRestorer:
     def _print_stats(self, text_blocks: List[Dict]):
         """打印统计信息"""
         print(f"\n⏱️  耗时:")
-        print(f"   Azure OCR: {self.timing['azure_ocr']:.2f}s")
+        print(f"   Text OCR:  {self.timing['text_ocr']:.2f}s")
         print(f"   Pix2Text:  {self.timing['pix2text_ocr']:.2f}s")
         print(f"   处理:      {self.timing['processing']:.2f}s")
         print(f"   总计:      {self.timing['total']:.2f}s")

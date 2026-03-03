@@ -39,8 +39,6 @@ logs/
 sam3_output/
 *.log
 
-# (Frontend removed; algorithm-only repo)
-
 # IDE & System
 .vscode/
 .idea/

@@ -2,20 +2,20 @@
 OCR 数据源模块
 
 包含：
-    - AzureOCR: Azure Document Intelligence OCR
+    - LocalOCR: 本地 Tesseract OCR（默认，易安装）
     - Pix2TextOCR: Pix2Text 公式识别
-
-这些是数据源层，一般不需要修改。
+    - TextBlock, OCRResult: 通用数据结构
 """
 
-from .azure import AzureOCR, TextBlock, OCRResult
+from .base import TextBlock, OCRResult
+from .local_ocr import LocalOCR
 from .pix2text import Pix2TextOCR, Pix2TextBlock, Pix2TextResult
 
 __all__ = [
-    'AzureOCR',
-    'TextBlock',
-    'OCRResult',
-    'Pix2TextOCR',
-    'Pix2TextBlock',
-    'Pix2TextResult',
+    "TextBlock",
+    "OCRResult",
+    "LocalOCR",
+    "Pix2TextOCR",
+    "Pix2TextBlock",
+    "Pix2TextResult",
 ]

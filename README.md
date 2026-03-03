@@ -74,26 +74,23 @@ To demonstrate the high-fidelity conversion effect, we provides one-to-one compa
 
 *   **Advanced Segmentation**: Using our fine-tuned **SAM 3 (Segment Anything Model 3)** for segmentation of diagram elements.
 *   **Fixed Multi-Round VLM Scanning**: An extraction process guided by **Multimodal LLMs (Qwen-VL/GPT-4V)**.
-*   **High-Quality OCR**:
-    *   **Azure Document Intelligence** for precise text localization.
-    *   **Fallback Mechanism**: Automatically switches to VLM-based end-to-end OCR if Azure services are unreachable.
-    *   **Mistral Vision/MLLM** for correcting text and converting mathematical formulas to **LaTeX** ($\int f(x) dx$).
-    *   **Crop-Guided Strategy**: Extracts text/formula regions and sends high-res crops to LLMs for pixel-perfect recognition.
+*   **Text Recognition**:
+    *   **Local OCR (Tesseract)** for text localization; easy to install (`pip install pytesseract` + system `tesseract-ocr`), runs offline.
+    *   **Pix2Text** for mathematical formula recognition and **LaTeX** conversion ($\int f(x) dx$).
+    *   **Crop-Guided Strategy**: Extracts text/formula regions and sends high-res crops to the formula engine.
 *   **User System**: 
     *   **Registration**: New users receive **10 free credits**.
     *   **Credit System**: Pay-per-use model prevents resource abuse.
 *   **Multi-User Concurrency**: Built-in support for concurrent user sessions using a **Global Lock** mechanism for thread-safe GPU access and an **LRU Cache** (Least Recently Used) to persist image embeddings across requests, ensuring high performance and stability.
-*   **Web Interface**: A React-based frontend + FastAPI backend for easy uploading and editing.
 
 ## Architecture Pipeline
 
 1.  **Input**: Image (PNG/JPG) or PDF.
 2.  **Segmentation (SAM3)**: Using our fine-tuned SAM3 mask decoder.
 4.  **Text Extraction (Parallel)**:
-    *   Azure OCR detects text bounding boxes.
-    *   High-res crops of text regions are sent to Mistral/LLM.
-    *   Latex conversion for formulas.
-5.  **XML/PPTX Generation**: Merging spatial data from our fine-tuned SAM3 and Text OCR.
+    *   Local OCR (Tesseract) detects text bounding boxes.
+    *   High-res crops of text/formula regions are sent to Pix2Text for LaTeX conversion.
+5.  **XML/PPTX Generation**: Merging spatial data from our fine-tuned SAM3 and text OCR results.
 
 ## Project Structure
 
@@ -101,9 +98,8 @@ To demonstrate the high-fidelity conversion effect, we provides one-to-one compa
 sam3_workflow/
 ├── config/                 # Configuration files
 ├── flowchart_text/         # OCR & Text Extraction Module
-│   ├── src/                # OCR Source Code (Azure, Mistral, Alignment)
+│   ├── src/                # OCR source (local Tesseract, Pix2Text, alignment)
 │   └── main.py             # OCR Entry point
-├── frontend/               # React Web Application
 ├── input/                  # [Manual] Input images directory
 ├── models/                 # [Manual] Model weights (SAM3)
 ├── output/                 # [Manual] Results directory
@@ -121,7 +117,6 @@ Follow these steps to set up the project locally.
 
 ### 1. Prerequisites
 *   **Python 3.10+**
-*   **Node.js & npm** (for the frontend)
 *   **CUDA-capable GPU** (Highly recommended)
 
 ### 2. Clone Repository
@@ -156,11 +151,9 @@ Download the required models and place them in the correct paths:
 pip install -r requirements.txt
 ```
 
-**Frontend:**
+**Tesseract (for text OCR):** Install the Tesseract engine on your system (required for local text recognition). Example on Ubuntu:
 ```bash
-cd frontend
-npm install
-cd ..
+sudo apt install tesseract-ocr tesseract-ocr-chi-sim
 ```
 
 ### 6. Configuration
@@ -169,33 +162,11 @@ cd ..
     ```bash
     cp config/config.yaml.example config/config.yaml
     ```
-2.  **Environment Variables**: Create a `.env` file in the root directory.
-    ```env
-    AZURE_ENDPOINT=your_azure_endpoint
-    AZURE_API_KEY=your_azure_key
-    # Add other keys as needed
-    ```
+2.  **Environment Variables** (optional): Create a `.env` file in the root directory if your setup requires API keys or endpoints.
 
 ## Usage
 
-### 1. Web Interface (Recommended)
-
-Start the Backend:
-```bash
-python server_pa.py
-# Server runs at http://localhost:8000
-```
-
-Start the Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-# Frontend runs at http://localhost:5173
-```
-Open your browser, upload an image, and view the result in the embedded DrawIO editor.
-
-### 2. Command Line Interface (CLI)
+### Command Line Interface (CLI)
 
 To process a single image:
 

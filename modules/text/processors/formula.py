@@ -3,21 +3,13 @@
 
 功能：
     1. 使用 Pix2Text 识别数学公式
-    2. 融合 Azure OCR 和 Pix2Text 结果
+    2. 融合 layout OCR 与 Pix2Text 结果
     3. 验证公式有效性
     4. 清洗 LaTeX 命令
 
-负责人：[填写负责人姓名]
-
 接口说明：
-    输入：azure_result（Azure OCR 结果）和 pix2text_result（Pix2Text 结果）
+    输入：ocr_result（主 OCR 结果）和 pix2text_result（Pix2Text 结果）
     输出：合并后的 text_blocks 列表
-
-使用示例：
-    from processors.formula import FormulaProcessor
-    
-    processor = FormulaProcessor()
-    merged_blocks = processor.merge_ocr_results(azure_result, pix2text_result)
 """
 
 import re
@@ -34,8 +26,8 @@ class MergedBlock:
     confidence: float = 1.0
     font_size_px: float = 12.0
     is_latex: bool = False
-    source: str = "azure"  # "azure" or "pix2text"
-    # 字体相关（从 Azure 继承）
+    source: str = "layout"  # "layout" or "pix2text"
+    # 字体相关（从 layout OCR 继承）
     font_name: Optional[str] = None
     font_style: Optional[str] = None
     font_weight: Optional[str] = None
@@ -48,12 +40,12 @@ class MergedBlock:
 class FormulaProcessor:
     """
     公式处理器
-    
+
     处理流程：
     1. 从 Pix2Text 结果提取有效公式
-    2. 计算公式与 Azure 文字块的重叠
+    2. 计算公式与 layout OCR 文字块的重叠
     3. 用公式替换被覆盖的文字块
-    4. 保留未被覆盖的 Azure 文字块
+    4. 保留未被覆盖的 layout OCR 文字块
     """
     
     # 数学符号指示器
@@ -104,22 +96,21 @@ class FormulaProcessor:
     
     def merge_ocr_results(
         self,
-        azure_result,
-        pix2text_result
+        ocr_result,
+        pix2text_result,
     ) -> List[MergedBlock]:
         """
-        合并 Azure 和 Pix2Text 结果（主入口）
-        
+        合并 layout OCR 和 Pix2Text 结果（主入口）
+
         Args:
-            azure_result: Azure OCR 结果对象
+            ocr_result: 主 OCR 结果对象
             pix2text_result: Pix2Text 结果对象
-            
+
         Returns:
             合并后的 MergedBlock 列表
         """
-        # 无 Pix2Text 结果时直接转换 Azure
         if not pix2text_result:
-            return self._convert_azure_only(azure_result)
+            return self._convert_ocr_only(ocr_result)
         
         # 提取有效公式（兼容 Pix2Text 和 UniMERNet）
         formula_blocks = [
@@ -141,85 +132,79 @@ class FormulaProcessor:
         print(f"   {len(valid_formulas)}/{len(formula_blocks)} 个有效公式")
         
         merged_results: List[MergedBlock] = []
-        azure_used_indices = set()
-        
-        # 处理每个公式
+        layout_used_indices = set()
+
         for formula in valid_formulas:
             f_poly = formula.polygon
             f_box = self._polygon_to_bbox(f_poly)
-            
+
             matched_indices = []
-            
-            # 查找与公式重叠的 Azure 块
-            for i, azure_block in enumerate(azure_result.text_blocks):
-                if i in azure_used_indices:
+
+            for i, layout_block in enumerate(ocr_result.text_blocks):
+                if i in layout_used_indices:
                     continue
-                
-                a_box = self._polygon_to_bbox(azure_block.polygon)
+
+                a_box = self._polygon_to_bbox(layout_block.polygon)
                 ratio = self._calculate_overlap_ratio(f_box, a_box)
-                text_match = self.text_similarity(azure_block.text, formula.text) > self.text_similarity_threshold
-                
+                text_match = self.text_similarity(layout_block.text, formula.text) > self.text_similarity_threshold
+
                 if ratio > self.overlap_threshold or text_match:
                     matched_indices.append(i)
-            
-            # 标记已使用的 Azure 块
+
             if matched_indices:
-                azure_used_indices.update(matched_indices)
-            
-            # 无论是否检测到重叠，都保留 Pix2Text 的公式（优先信任 Pix2Text）
+                layout_used_indices.update(matched_indices)
+
             cleaned_text = self.clean_latex(formula.text)
             formula_height = f_box[3] - f_box[1]
-            
+
             merged_results.append(MergedBlock(
                 text=cleaned_text,
                 polygon=f_poly,
-                confidence=getattr(formula, 'score', 1.0),
+                confidence=getattr(formula, "score", 1.0),
                 font_size_px=formula_height * 0.35,
                 is_latex=True,
-                source="pix2text"
+                source="pix2text",
             ))
-        
-        # 添加剩余的 Azure 块（保留字体信息）
-        for i, azure_block in enumerate(azure_result.text_blocks):
-            if i not in azure_used_indices:
+
+        for i, layout_block in enumerate(ocr_result.text_blocks):
+            if i not in layout_used_indices:
                 merged_results.append(MergedBlock(
-                    text=azure_block.text,
-                    polygon=azure_block.polygon,
-                    confidence=getattr(azure_block, 'confidence', 1.0),
-                    font_size_px=azure_block.font_size_px,
+                    text=layout_block.text,
+                    polygon=layout_block.polygon,
+                    confidence=getattr(layout_block, "confidence", 1.0),
+                    font_size_px=layout_block.font_size_px,
                     is_latex=False,
-                    source="azure",
-                    # 保留 Azure 的字体信息
-                    font_name=getattr(azure_block, 'font_name', None),
-                    font_style=getattr(azure_block, 'font_style', None),
-                    font_weight=getattr(azure_block, 'font_weight', None),
-                    font_color=getattr(azure_block, 'font_color', None),
-                    is_bold=getattr(azure_block, 'is_bold', False),
-                    is_italic=getattr(azure_block, 'is_italic', False),
-                    spans=getattr(azure_block, 'spans', [])
+                    source="layout",
+                    font_name=getattr(layout_block, "font_name", None),
+                    font_style=getattr(layout_block, "font_style", None),
+                    font_weight=getattr(layout_block, "font_weight", None),
+                    font_color=getattr(layout_block, "font_color", None),
+                    is_bold=getattr(layout_block, "is_bold", False),
+                    is_italic=getattr(layout_block, "is_italic", False),
+                    spans=getattr(layout_block, "spans", []),
                 ))
-        
+
         return merged_results
-    
-    def _convert_azure_only(self, azure_result) -> List[MergedBlock]:
-        """仅转换 Azure 结果（保留字体信息）"""
+
+    def _convert_ocr_only(self, ocr_result) -> List[MergedBlock]:
+        """仅转换 OCR 结果（保留字体信息）"""
         return [
             MergedBlock(
                 text=b.text,
                 polygon=b.polygon,
-                confidence=getattr(b, 'confidence', 1.0),
+                confidence=getattr(b, "confidence", 1.0),
                 font_size_px=b.font_size_px,
                 is_latex=False,
-                source="azure",
-                font_name=getattr(b, 'font_name', None),
-                font_style=getattr(b, 'font_style', None),
-                font_weight=getattr(b, 'font_weight', None),
-                font_color=getattr(b, 'font_color', None),
-                is_bold=getattr(b, 'is_bold', False),
-                is_italic=getattr(b, 'is_italic', False),
-                spans=getattr(b, 'spans', [])
+                source="layout",
+                font_name=getattr(b, "font_name", None),
+                font_style=getattr(b, "font_style", None),
+                font_weight=getattr(b, "font_weight", None),
+                font_color=getattr(b, "font_color", None),
+                is_bold=getattr(b, "is_bold", False),
+                is_italic=getattr(b, "is_italic", False),
+                spans=getattr(b, "spans", []),
             )
-            for b in azure_result.text_blocks
+            for b in ocr_result.text_blocks
         ]
     
     def is_valid_formula(self, latex_text: str) -> bool:
